@@ -1,0 +1,94 @@
+blueprint:
+  name: Démarrage de la pompe de piscine selon la température de l'eau
+  description: Automatisation pour démarrer la pompe de piscine en fonction de la température de l'eau.
+  domain: automation
+  input:
+    water_temperature_sensor:
+      name: Capteur de température de l'eau
+      description: Entité du capteur de température de l'eau
+      selector:
+        entity:
+          domain: sensor
+    pool_pump_switch:
+      name: Commutateur de la pompe de piscine
+      description: Entité du commutateur de la pompe de piscine
+      selector:
+        entity:
+          domain: switch
+
+trigger:
+  - platform: time
+    at: '10:00:00'
+
+variables:
+  water_temperature: "{{ states(!input water_temperature_sensor) | float }}"
+
+action:
+  - service: input_number.set_value
+    data:
+      entity_id: input_number.pump_run_time
+      value: >
+        {% if water_temperature > 48 %}
+          24
+        {% else %}
+          {{ (water_temperature / 2) | round(2) }}
+        {% endif %}
+  - service: homeassistant.update_entity
+    entity_id: automation.start_pool_pump_sessions
+
+automation:
+  - alias: 'Start pool pump sessions'
+    trigger:
+      platform: state
+      entity_id: input_number.pump_run_time
+    action:
+      - service: script.turn_on
+        data:
+          entity_id: script.pool_pump_schedule
+
+script:
+  pool_pump_schedule:
+    sequence:
+      - condition: numeric_state
+        entity_id: input_number.pump_run_time
+        above: 0
+      - variables:
+          pump_runtime: "{{ states('input_number.pump_run_time') | float * 3600 }}"
+      - choose:
+          - conditions:
+              - condition: template
+                value_template: "{{ states('input_number.pump_run_time') | float == 24 }}"
+            sequence:
+              - service: switch.turn_on
+                data:
+                  entity_id: !input pool_pump_switch
+            default:
+            - variables:
+                intervals: [ '10:00:00', '18:00:00', '02:00:00' ]
+            - repeat:
+                count: 3
+                sequence:
+                  - service: script.pool_pump_cycle
+                    data:
+                      start_time: "{{ intervals[repeat.index] }}"
+                      duration: "{{ pump_runtime / 3 }}"
+                  - delay: "00:00:01"
+
+  pool_pump_cycle:
+    sequence:
+      - delay: '{{ start_time }}'
+      - service: switch.turn_on
+        data:
+          entity_id: !input pool_pump_switch
+      - delay: '{{ duration | int }}'
+      - service: switch.turn_off
+        data:
+          entity_id: !input pool_pump_switch
+
+input_number:
+  pump_run_time:
+    name: Temps de fonctionnement de la pompe
+    min: 0
+    max: 24
+    unit_of_measurement: 'heures'
+    icon: mdi:timer
